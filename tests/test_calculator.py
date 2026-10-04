@@ -4,36 +4,32 @@ import pandas as pd
 import pytest
 from unittest.mock import Mock, patch, PropertyMock
 from decimal import Decimal
-from tempfile import TemporaryDirectory
 from app.calculator import Calculator
 from app.calculator_repl import calculator_repl
 from app.calculator_config import CalculatorConfig
 from app.exceptions import OperationError, ValidationError
 from app.history import LoggingObserver, AutoSaveObserver
 from app.operations import OperationFactory
+from app.calculation import Calculation
+from app.calculator_memento import CalculatorMemento
 
 # Fixture to initialize Calculator with a temporary directory for file paths
 @pytest.fixture
-def calculator():
-    with TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        config = CalculatorConfig(base_dir=temp_path)
+def calculator(tmp_path):
+    temp_path = tmp_path
+    config = CalculatorConfig(base_dir=temp_path)
 
-        # Patch properties to use the temporary directory paths
-        with patch.object(CalculatorConfig, 'log_dir', new_callable=PropertyMock) as mock_log_dir, \
-             patch.object(CalculatorConfig, 'log_file', new_callable=PropertyMock) as mock_log_file, \
-             patch.object(CalculatorConfig, 'history_dir', new_callable=PropertyMock) as mock_history_dir, \
-             patch.object(CalculatorConfig, 'history_file', new_callable=PropertyMock) as mock_history_file:
-            
-            # Set return values to use paths within the temporary directory
-            mock_log_dir.return_value = temp_path / "logs"
-            mock_log_file.return_value = temp_path / "logs/calculator.log"
-            mock_history_dir.return_value = temp_path / "history"
-            mock_history_file.return_value = temp_path / "history/calculator_history.csv"
-            
-            # Return an instance of Calculator with the mocked config
-            yield Calculator(config=config)
+    with patch.object(CalculatorConfig, 'log_dir', new_callable=PropertyMock) as mock_log_dir, \
+         patch.object(CalculatorConfig, 'log_file', new_callable=PropertyMock) as mock_log_file, \
+         patch.object(CalculatorConfig, 'history_dir', new_callable=PropertyMock) as mock_history_dir, \
+         patch.object(CalculatorConfig, 'history_file', new_callable=PropertyMock) as mock_history_file:
 
+        mock_log_dir.return_value = temp_path / "logs"
+        mock_log_file.return_value = temp_path / "logs" / "calculator.log"
+        mock_history_dir.return_value = temp_path / "history"
+        mock_history_file.return_value = temp_path / "history" / "calculator_history.csv"
+
+        yield Calculator(config=config)
 # Test Calculator Initialization
 
 def test_calculator_initialization(calculator):
@@ -273,3 +269,239 @@ def test_load_history_file_not_found(calculator):
 
     assert calculator.history == []
 
+@patch('builtins.input', side_effect=['subtract', '5', '2', 'exit'])
+@patch('builtins.print')
+def test_calculator_repl_subtraction(mock_print, mock_input):
+    calculator_repl()
+    mock_print.assert_any_call("\nResult: 3")
+
+
+@patch('builtins.input', side_effect=['multiply', '4', '3', 'exit'])
+@patch('builtins.print')
+def test_calculator_repl_multiplication(mock_print, mock_input):
+    calculator_repl()
+    mock_print.assert_any_call("\nResult: 12")
+
+
+@patch('builtins.input', side_effect=['divide', '10', '2', 'exit'])
+@patch('builtins.print')
+def test_calculator_repl_division(mock_print, mock_input):
+    calculator_repl()
+    mock_print.assert_any_call("\nResult: 5")
+
+
+@patch('builtins.input', side_effect=['history', 'exit'])
+@patch('builtins.print')
+def test_calculator_repl_history(mock_print, mock_input):
+    calculator_repl()
+    mock_print.assert_any_call("\nCalculation History:")
+
+
+@patch('builtins.input', side_effect=['clear', 'exit'])
+@patch('builtins.print')
+def test_calculator_repl_clear(mock_print, mock_input):
+    calculator_repl()
+    mock_print.assert_any_call("History cleared")
+
+
+@patch('builtins.input', side_effect=['undo', 'exit'])
+@patch('builtins.print')
+def test_calculator_repl_undo(mock_print, mock_input):
+    calculator_repl()
+    mock_print.assert_any_call("Nothing to undo")
+
+
+@patch('builtins.input', side_effect=['redo', 'exit'])
+@patch('builtins.print')
+def test_calculator_repl_redo(mock_print, mock_input):
+    calculator_repl()
+    mock_print.assert_any_call("Nothing to redo")
+
+def test_calculator_perform_operation_unexpected_error(calculator):
+    """Test that unexpected operation errors are converted to OperationError."""
+    mock_operation = Mock()
+    mock_operation.execute.side_effect = Exception("Test error")
+
+    calculator.set_operation(mock_operation)
+
+    with pytest.raises(OperationError, match="Operation failed: Test error"):
+        calculator.perform_operation(2, 3)
+
+def test_calculator_save_history_error(calculator):
+    """Test save_history handles file errors."""
+    with patch("app.calculator.Path.mkdir", side_effect=OSError("Test save error")):
+        with pytest.raises(OperationError, match="Failed to save history"):
+            calculator.save_history()
+
+
+def test_calculator_load_history_error(calculator):
+    """Test load_history handles file errors."""
+    with patch("app.calculator.Path.exists", side_effect=OSError("Test load error")):
+        with pytest.raises(OperationError, match="Failed to load history"):
+            calculator.load_history()
+
+def test_calculator_logging_error():
+    """Test logging setup handles an exception."""
+    config = CalculatorConfig()
+
+    with patch("app.calculator.os.makedirs", side_effect=OSError("Logging error")):
+        with pytest.raises(OSError, match="Logging error"):
+            Calculator(config)
+
+
+def test_calculator_without_config():
+    """Test calculator creates default configuration when none is provided."""
+    with patch("app.calculator.CalculatorConfig") as mock_config_class:
+        mock_config = Mock()
+        mock_config.log_dir = Path("logs")
+        mock_config.log_file = Path("logs/calculator.log")
+        mock_config.history_dir = Path("history")
+        mock_config.history_file = Path("history/calculator_history.csv")
+        mock_config.max_history_size = 100
+        mock_config_class.return_value = mock_config
+
+        with patch("app.calculator.os.makedirs"):
+            with patch.object(Calculator, "_setup_logging"):
+                with patch.object(Calculator, "_setup_directories"):
+                    with patch.object(Calculator, "load_history"):
+                        calculator = Calculator()
+
+        assert calculator.config == mock_config
+
+def test_calculator_without_config():
+    """Test calculator creates default configuration."""
+    with patch("app.calculator.CalculatorConfig") as mock_config_class:
+        mock_config = Mock()
+        mock_config.log_dir = Path("logs")
+        mock_config.log_file = Path("logs/calculator.log")
+        mock_config.history_dir = Path("history")
+        mock_config.history_file = Path("history/calculator_history.csv")
+        mock_config.max_history_size = 100
+
+        mock_config_class.return_value = mock_config
+
+        with patch("app.calculator.os.makedirs"):
+            with patch.object(Calculator, "_setup_logging"):
+                with patch.object(Calculator, "_setup_directories"):
+                    with patch.object(Calculator, "load_history"):
+                        calculator = Calculator()
+
+        assert calculator.config == mock_config
+
+
+def test_calculator_logging_error(calculator):
+    """Test logging setup handles an exception."""
+    with patch(
+        "app.calculator.os.makedirs",
+        side_effect=OSError("Logging error")
+    ):
+        with pytest.raises(OSError, match="Logging error"):
+            calculator._setup_logging()
+
+def test_calculator_memento_to_dict_and_from_dict():
+    """Test converting a calculator memento to and from a dictionary."""
+    calculation = Calculation(
+        operation="Addition",
+        operand1=2,
+        operand2=3
+    )
+
+    memento = CalculatorMemento(history=[calculation])
+
+    data = memento.to_dict()
+
+    restored = CalculatorMemento.from_dict(data)
+
+    assert len(restored.history) == 1
+    assert restored.history[0].operand1 == 2
+    assert restored.history[0].operand2 == 3
+
+def test_calculator_uses_default_config():
+    """Test Calculator creates a default config when none is provided."""
+    mock_config = Mock()
+    mock_config.log_dir = Path("logs")
+    mock_config.log_file = Path("logs/calculator.log")
+    mock_config.history_dir = Path("history")
+    mock_config.history_file = Path("history/calculator_history.csv")
+    mock_config.max_history_size = 100
+
+    with patch(
+        "app.calculator.CalculatorConfig",
+        return_value=mock_config
+    ):
+        with patch("app.calculator.os.makedirs"):
+            with patch.object(Calculator, "_setup_logging"):
+                with patch.object(Calculator, "_setup_directories"):
+                    with patch.object(Calculator, "load_history"):
+                        calculator = Calculator()
+
+    assert calculator.config == mock_config
+def test_calculation_unknown_operation():
+    """Test that an unknown operation raises OperationError."""
+    with pytest.raises(OperationError, match="Unknown operation"):
+        Calculation(
+            operation="Unknown",
+            operand1=Decimal("2"),
+            operand2=Decimal("3")
+        )
+
+
+def test_calculation_invalid_data():
+    """Test invalid calculation data raises OperationError."""
+    data = {
+        "operation": "Addition",
+        "operand1": "invalid",
+        "operand2": "3",
+        "result": "6",
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+
+    with pytest.raises(OperationError, match="Invalid calculation data"):
+        Calculation.from_dict(data)
+
+
+def test_calculation_not_equal_to_other_type():
+    """Test comparison with a non-Calculation object."""
+    calculation = Calculation(
+        operation="Addition",
+        operand1=Decimal("2"),
+        operand2=Decimal("3")
+    )
+
+    assert calculation.__eq__("not a calculation") is NotImplemented
+
+
+def test_calculation_format_result():
+    """Test formatting a calculation result."""
+    calculation = Calculation(
+        operation="Addition",
+        operand1=Decimal("2"),
+        operand2=Decimal("3")
+    )
+
+    assert calculation.format_result() == "5"
+
+
+@patch("builtins.input", side_effect=["add", "2", "3", "exit"])
+@patch("builtins.print")
+def test_calculator_repl_add(mock_print, mock_input):
+    """Test addition through the calculator REPL."""
+    calculator_repl()
+
+    mock_print.assert_any_call("\nResult: 5")
+
+@patch("builtins.input", side_effect=["invalid", "exit"])
+@patch("builtins.print")
+def test_calculator_repl_invalid_command(mock_print, mock_input):
+    """Test an invalid command in the REPL."""
+    calculator_repl()
+
+    assert mock_print.called
+
+@patch("builtins.input", side_effect=["add", "2", "abc", "exit"])
+@patch("builtins.print")
+def test_calculator_repl_invalid_second_number(mock_print, mock_input):
+    """Test invalid input for the second number."""
+    calculator_repl()
+
+    assert mock_print.called

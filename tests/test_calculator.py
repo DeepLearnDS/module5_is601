@@ -178,3 +178,98 @@ def test_calculator_repl_help(mock_print, mock_input):
 def test_calculator_repl_addition(mock_print, mock_input):
     calculator_repl()
     mock_print.assert_any_call("\nResult: 5")
+
+# Additional tests for 100% coverage
+
+def test_history_max_size(calculator):
+    """Test that history is limited to max_history_size."""
+    calculator.config.max_history_size = 2
+
+    operation = OperationFactory.create_operation('add')
+    calculator.set_operation(operation)
+
+    calculator.perform_operation(1, 2)
+    calculator.perform_operation(2, 3)
+    calculator.perform_operation(3, 4)
+
+    assert len(calculator.history) == 2
+    assert calculator.history[0].operand1 == Decimal("2")
+    assert calculator.history[1].operand1 == Decimal("3")
+
+
+def test_get_history_dataframe(calculator):
+    """Test converting calculation history to a DataFrame."""
+    operation = OperationFactory.create_operation('add')
+    calculator.set_operation(operation)
+    calculator.perform_operation(2, 3)
+
+    df = calculator.get_history_dataframe()
+
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 1
+    assert "operation" in df.columns
+    assert "operand1" in df.columns
+    assert "operand2" in df.columns
+    assert "result" in df.columns
+    assert "timestamp" in df.columns
+
+
+def test_show_history(calculator):
+    """Test formatted history output."""
+    operation = OperationFactory.create_operation('add')
+    calculator.set_operation(operation)
+    calculator.perform_operation(2, 3)
+
+    history = calculator.show_history()
+
+    assert len(history) == 1
+    assert "Addition" in history[0]
+    assert "2" in history[0]
+    assert "3" in history[0]
+    assert "5" in history[0]
+
+
+def test_undo_when_empty(calculator):
+    """Test undo when there is nothing to undo."""
+    assert calculator.undo() is False
+
+
+def test_redo_when_empty(calculator):
+    """Test redo when there is nothing to redo."""
+    assert calculator.redo() is False
+
+
+def test_save_empty_history(calculator):
+    """Test saving an empty history."""
+    calculator.save_history()
+
+    assert calculator.config.history_file.exists()
+
+
+def test_load_empty_history(calculator):
+    """Test loading an empty history file."""
+    calculator.config.history_file.parent.mkdir(parents=True, exist_ok=True)
+
+    pd.DataFrame(
+        columns=[
+            'operation',
+            'operand1',
+            'operand2',
+            'result',
+            'timestamp'
+        ]
+    ).to_csv(calculator.config.history_file, index=False)
+
+    calculator.load_history()
+
+    assert calculator.history == []
+
+
+def test_load_history_file_not_found(calculator):
+    """Test loading when the history file does not exist."""
+    assert not calculator.config.history_file.exists()
+
+    calculator.load_history()
+
+    assert calculator.history == []
+
